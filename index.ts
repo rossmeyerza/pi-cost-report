@@ -28,10 +28,44 @@ interface ModelCost {
   messageCount: number;
 }
 
+interface ProjectCost {
+  project: string; // absolute working directory (cwd) the session ran in
+  cost: number;
+  inputCost: number;
+  outputCost: number;
+  cacheReadCost: number;
+  cacheWriteCost: number;
+  inputTokens: number;
+  outputTokens: number;
+  messageCount: number;
+  sessionCount: number;
+}
+
+// A node in the directory-cost tree. Costs are rolled up: a node's cost is the
+// sum of every session at or beneath its path.
+interface ProjectTreeNode {
+  label: string; // display segment(s); single-child chains are compressed into one label
+  path: string; // full absolute path of this node
+  cost: number;
+  inputCost: number;
+  outputCost: number;
+  cacheReadCost: number;
+  cacheWriteCost: number;
+  inputTokens: number;
+  outputTokens: number;
+  messageCount: number;
+  projectCount: number; // number of leaf projects (distinct cwds) under this node
+  isProject: boolean; // true if a session ran directly in this directory
+  children: ProjectTreeNode[];
+}
+
 interface CostData {
   daily: DayCost[];
   byModel: ModelCost[];
   dailyModels: Record<string, ModelCost[]>;
+  byProject: ProjectCost[];
+  projectDaily: Record<string, DayCost[]>;
+  projectModels: Record<string, ModelCost[]>;
   total: number;
   inputCost: number;
   outputCost: number;
@@ -99,6 +133,9 @@ function emptyCostData(): CostData {
     daily: [],
     byModel: [],
     dailyModels: {},
+    byProject: [],
+    projectDaily: {},
+    projectModels: {},
     total: 0,
     inputCost: 0,
     outputCost: 0,
@@ -144,6 +181,10 @@ async function scanSessions(fromDate = "0000-01-01", toDate?: string): Promise<C
   const daily: Record<string, MutableCost> = {};
   const byModel: Record<string, MutableCost> = {};
   const dailyModels: Record<string, Record<string, MutableCost>> = {};
+  const byProject: Record<string, MutableCost> = {};
+  const projectDays: Record<string, Record<string, MutableCost>> = {};
+  const projectModels: Record<string, Record<string, MutableCost>> = {};
+  const projectSessions: Record<string, Set<string>> = {};
   let total = 0;
   let inputCost = 0;
   let outputCost = 0;
@@ -165,6 +206,7 @@ async function scanSessions(fromDate = "0000-01-01", toDate?: string): Promise<C
 
   for (const filePath of files) {
     let sessionId = filePath;
+    let sessionCwd = "unknown";
     const fileStream = fs.createReadStream(filePath, { encoding: "utf-8" });
     const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
 
@@ -173,8 +215,9 @@ async function scanSessions(fromDate = "0000-01-01", toDate?: string): Promise<C
       if (!line.includes('"message"') && !line.includes('"session"')) continue;
       try {
         const entry = JSON.parse(line);
-        if (entry?.type === "session" && entry?.id) {
-          sessionId = entry.id;
+        if (entry?.type === "session") {
+          if (entry.id) sessionId = entry.id;
+          if (typeof entry.cwd === "string" && entry.cwd) sessionCwd = entry.cwd;
           continue;
         }
         if (entry?.type !== "message") continue;
@@ -243,6 +286,36 @@ async function scanSessions(fromDate = "0000-01-01", toDate?: string): Promise<C
         dailyModels[day][model].inputTokens += usageInputTokens;
         dailyModels[day][model].outputTokens += usageOutputTokens;
         dailyModels[day][model].messageCount += 1;
+        byProject[sessionCwd] ||= newMutableCost();
+        byProject[sessionCwd].cost += cost;
+        byProject[sessionCwd].inputCost += usageInputCost;
+        byProject[sessionCwd].outputCost += usageOutputCost;
+        byProject[sessionCwd].cacheReadCost += usageCacheReadCost;
+        byProject[sessionCwd].cacheWriteCost += usageCacheWriteCost;
+        byProject[sessionCwd].inputTokens += usageInputTokens;
+        byProject[sessionCwd].outputTokens += usageOutputTokens;
+        byProject[sessionCwd].messageCount += 1;
+        projectDays[sessionCwd] ||= {};
+        projectDays[sessionCwd][day] ||= newMutableCost();
+        projectDays[sessionCwd][day].cost += cost;
+        projectDays[sessionCwd][day].inputCost += usageInputCost;
+        projectDays[sessionCwd][day].outputCost += usageOutputCost;
+        projectDays[sessionCwd][day].cacheReadCost += usageCacheReadCost;
+        projectDays[sessionCwd][day].cacheWriteCost += usageCacheWriteCost;
+        projectDays[sessionCwd][day].inputTokens += usageInputTokens;
+        projectDays[sessionCwd][day].outputTokens += usageOutputTokens;
+        projectDays[sessionCwd][day].messageCount += 1;
+        projectModels[sessionCwd] ||= {};
+        projectModels[sessionCwd][model] ||= newMutableCost();
+        projectModels[sessionCwd][model].cost += cost;
+        projectModels[sessionCwd][model].inputCost += usageInputCost;
+        projectModels[sessionCwd][model].outputCost += usageOutputCost;
+        projectModels[sessionCwd][model].cacheReadCost += usageCacheReadCost;
+        projectModels[sessionCwd][model].cacheWriteCost += usageCacheWriteCost;
+        projectModels[sessionCwd][model].inputTokens += usageInputTokens;
+        projectModels[sessionCwd][model].outputTokens += usageOutputTokens;
+        projectModels[sessionCwd][model].messageCount += 1;
+        (projectSessions[sessionCwd] ||= new Set()).add(sessionId);
         total += cost;
         inputCost += usageInputCost;
         outputCost += usageOutputCost;
@@ -273,10 +346,31 @@ async function scanSessions(fromDate = "0000-01-01", toDate?: string): Promise<C
       .sort((a, b) => b.cost - a.cost);
   }
 
+  const projectArr: ProjectCost[] = Object.entries(byProject)
+    .map(([project, cost]) => ({ project, ...cost, sessionCount: projectSessions[project]?.size || 0 }))
+    .sort((a, b) => b.cost - a.cost);
+
+  const projectDailyArr: Record<string, DayCost[]> = {};
+  for (const [project, days] of Object.entries(projectDays)) {
+    projectDailyArr[project] = Object.entries(days)
+      .map(([date, value]) => ({ date, ...value }))
+      .sort((a, b) => a.date.localeCompare(b.date));
+  }
+
+  const projectModelArr: Record<string, ModelCost[]> = {};
+  for (const [project, models] of Object.entries(projectModels)) {
+    projectModelArr[project] = Object.entries(models)
+      .map(([model, value]) => ({ model, ...value }))
+      .sort((a, b) => b.cost - a.cost);
+  }
+
   return {
     daily: dailyArr,
     byModel: modelArr,
     dailyModels: dailyModelArr,
+    byProject: projectArr,
+    projectDaily: projectDailyArr,
+    projectModels: projectModelArr,
     total,
     inputCost,
     outputCost,
@@ -538,16 +632,157 @@ function modelTable(models: ModelCost[], total: number, selectedIndex = -1, colo
   return lines;
 }
 
+// --- Per-project (directory) tree -------------------------------------------
+
+type RawTreeNode = {
+  seg: string;
+  full: string;
+  cost: number;
+  inputCost: number;
+  outputCost: number;
+  cacheReadCost: number;
+  cacheWriteCost: number;
+  inputTokens: number;
+  outputTokens: number;
+  messageCount: number;
+  projectCount: number;
+  isProject: boolean;
+  children: Map<string, RawTreeNode>;
+};
+
+function commonPrefixSegments(paths: string[][]): string[] {
+  if (paths.length === 0) return [];
+  let prefix = paths[0].slice();
+  for (let i = 1; i < paths.length && prefix.length > 0; i++) {
+    const segs = paths[i];
+    let j = 0;
+    while (j < prefix.length && j < segs.length && prefix[j] === segs[j]) j++;
+    prefix = prefix.slice(0, j);
+  }
+  return prefix;
+}
+
+// Build a cost tree from session working directories. Each node's cost is the
+// sum of every session at or beneath it; pure pass-through directories (one
+// child, no sessions of their own) are compressed into a single labelled row.
+function buildProjectTree(projects: ProjectCost[]): ProjectTreeNode | null {
+  const known = projects.filter((p) => p.project && p.project !== "unknown");
+  if (known.length === 0) return null;
+
+  const segLists = known.map((p) => p.project.split("/").filter(Boolean));
+  const prefix = commonPrefixSegments(segLists);
+  const rootPath = "/" + prefix.join("/");
+
+  const makeNode = (seg: string, full: string): RawTreeNode => ({
+    seg,
+    full,
+    cost: 0,
+    inputCost: 0,
+    outputCost: 0,
+    cacheReadCost: 0,
+    cacheWriteCost: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    messageCount: 0,
+    projectCount: 0,
+    isProject: false,
+    children: new Map(),
+  });
+
+  const addInto = (node: RawTreeNode, p: ProjectCost) => {
+    node.cost += p.cost;
+    node.inputCost += p.inputCost;
+    node.outputCost += p.outputCost;
+    node.cacheReadCost += p.cacheReadCost;
+    node.cacheWriteCost += p.cacheWriteCost;
+    node.inputTokens += p.inputTokens;
+    node.outputTokens += p.outputTokens;
+    node.messageCount += p.messageCount;
+    node.projectCount += 1;
+  };
+
+  const root = makeNode(prefix.length ? "/" + prefix.join("/") : "/", rootPath || "/");
+
+  for (let k = 0; k < known.length; k++) {
+    const p = known[k];
+    const rest = segLists[k].slice(prefix.length);
+    addInto(root, p);
+    if (rest.length === 0) {
+      root.isProject = true;
+      continue;
+    }
+    let node = root;
+    let acc = root.full;
+    for (let i = 0; i < rest.length; i++) {
+      const seg = rest[i];
+      acc = acc === "/" ? "/" + seg : acc + "/" + seg;
+      let child = node.children.get(seg);
+      if (!child) {
+        child = makeNode(seg, acc);
+        node.children.set(seg, child);
+      }
+      addInto(child, p);
+      if (i === rest.length - 1) child.isProject = true;
+      node = child;
+    }
+  }
+
+  const compress = (node: RawTreeNode): ProjectTreeNode => {
+    let cur = node;
+    let label = node.seg;
+    while (cur.children.size === 1 && !cur.isProject) {
+      const only = [...cur.children.values()][0];
+      label = label === "/" ? "/" + only.seg : `${label}/${only.seg}`;
+      cur = only;
+    }
+    const children = [...cur.children.values()].map(compress).sort((a, b) => b.cost - a.cost);
+    return {
+      label,
+      path: cur.full,
+      cost: cur.cost,
+      inputCost: cur.inputCost,
+      outputCost: cur.outputCost,
+      cacheReadCost: cur.cacheReadCost,
+      cacheWriteCost: cur.cacheWriteCost,
+      inputTokens: cur.inputTokens,
+      outputTokens: cur.outputTokens,
+      messageCount: cur.messageCount,
+      projectCount: cur.projectCount,
+      isProject: cur.isProject,
+      children,
+    };
+  };
+
+  return compress(root);
+}
+
+type ProjectRow = { node: ProjectTreeNode; depth: number };
+
+function flattenProjectTree(root: ProjectTreeNode, expanded: Set<string>): ProjectRow[] {
+  const rows: ProjectRow[] = [];
+  const walk = (node: ProjectTreeNode, depth: number) => {
+    rows.push({ node, depth });
+    if (node.children.length > 0 && expanded.has(node.path)) {
+      for (const child of node.children) walk(child, depth + 1);
+    }
+  };
+  walk(root, 0);
+  return rows;
+}
+
 type ThemeLike = {
   fg(name: string, text: string): string;
   bold(text: string): string;
 };
 
 class CostsComponent implements Component {
-  private sections = ["Overview", "Daily", "Models"];
+  private sections = ["Overview", "Daily", "Models", "Projects"];
   private sectionIndex = 0;
   private dailyIndex: number;
   private modelIndex = 0;
+  private projectIndex = 0;
+  private readonly projectTree: ProjectTreeNode | null;
+  private readonly expandedProjects: Set<string>;
   private cachedWidth?: number;
   private cachedLines?: string[];
 
@@ -559,6 +794,14 @@ class CostsComponent implements Component {
     private readonly onClose: () => void,
   ) {
     this.dailyIndex = Math.max(0, data.daily.length - 1);
+    this.projectTree = buildProjectTree(data.byProject);
+    // Start with the root expanded so its immediate directories are visible.
+    this.expandedProjects = new Set(this.projectTree ? [this.projectTree.path] : []);
+  }
+
+  private visibleProjectRows(): ProjectRow[] {
+    if (!this.projectTree) return [];
+    return flattenProjectTree(this.projectTree, this.expandedProjects);
   }
 
   invalidate(): void {
@@ -590,25 +833,40 @@ class CostsComponent implements Component {
 
     if (matchesKey(data, Key.home)) {
       if (this.sectionIndex === 2) this.modelIndex = 0;
+      else if (this.sectionIndex === 3) this.projectIndex = 0;
       else this.dailyIndex = 0;
       this.refresh();
       return;
     }
     if (matchesKey(data, Key.end)) {
       if (this.sectionIndex === 2) this.modelIndex = Math.max(0, this.data.byModel.length - 1);
+      else if (this.sectionIndex === 3) this.projectIndex = Math.max(0, this.visibleProjectRows().length - 1);
       else this.dailyIndex = Math.max(0, this.data.daily.length - 1);
       this.refresh();
       return;
     }
 
+    // In the Projects tree, Enter/Space expands or collapses the selected directory.
+    if (this.sectionIndex === 3 && (matchesKey(data, Key.enter) || matchesKey(data, Key.return) || matchesKey(data, Key.space))) {
+      const row = this.visibleProjectRows()[this.projectIndex];
+      if (row && row.node.children.length > 0) {
+        if (this.expandedProjects.has(row.node.path)) this.expandedProjects.delete(row.node.path);
+        else this.expandedProjects.add(row.node.path);
+        this.refresh();
+      }
+      return;
+    }
+
     if (matchesKey(data, Key.up)) {
       if (this.sectionIndex === 2) this.modelIndex = moveIndex(this.modelIndex, -1, this.data.byModel.length);
+      else if (this.sectionIndex === 3) this.projectIndex = moveIndex(this.projectIndex, -1, this.visibleProjectRows().length);
       else this.dailyIndex = moveIndex(this.dailyIndex, -1, this.data.daily.length);
       this.refresh();
       return;
     }
     if (matchesKey(data, Key.down)) {
       if (this.sectionIndex === 2) this.modelIndex = moveIndex(this.modelIndex, 1, this.data.byModel.length);
+      else if (this.sectionIndex === 3) this.projectIndex = moveIndex(this.projectIndex, 1, this.visibleProjectRows().length);
       else this.dailyIndex = moveIndex(this.dailyIndex, 1, this.data.daily.length);
       this.refresh();
     }
@@ -641,13 +899,18 @@ class CostsComponent implements Component {
       lines.push(...this.renderOverview(contentWidth).map(boxLine));
     } else if (this.sectionIndex === 1) {
       lines.push(...this.renderDaily(contentWidth).map(boxLine));
-    } else {
+    } else if (this.sectionIndex === 2) {
       lines.push(...this.renderModels(contentWidth).map(boxLine));
+    } else {
+      lines.push(...this.renderProjects(contentWidth).map(boxLine));
     }
 
     lines.push(rule("├", "┤"));
-    const where = this.sectionIndex === 2 ? "select model" : "select date";
-    lines.push(boxLine(`${this.theme.fg("dim", "←/→")} section · ${this.theme.fg("dim", "↑/↓")} ${where} · ${this.theme.fg("dim", "Home/End")} jump · ${this.theme.fg("dim", "q/Esc")} close`));
+    let where = "select date";
+    if (this.sectionIndex === 2) where = "select model";
+    else if (this.sectionIndex === 3) where = "select dir";
+    const expandHint = this.sectionIndex === 3 ? ` · ${this.theme.fg("dim", "↵/Space")} expand` : "";
+    lines.push(boxLine(`${this.theme.fg("dim", "←/→")} section · ${this.theme.fg("dim", "↑/↓")} ${where}${expandHint} · ${this.theme.fg("dim", "Home/End")} jump · ${this.theme.fg("dim", "q/Esc")} close`));
     lines.push(rule("╰", "╯"));
 
     this.cachedWidth = width;
@@ -740,6 +1003,123 @@ class CostsComponent implements Component {
     lines.push(costSplitLine(selected));
     lines.push("");
     lines.push(...lineChart(series, width, series[series.length - 1]?.date, this.chartColors()));
+    return lines;
+  }
+
+  // Every leaf project (cwd) at or beneath a directory path.
+  private projectsUnder(dir: string): ProjectCost[] {
+    const prefix = dir.endsWith("/") ? dir : `${dir}/`;
+    return this.data.byProject.filter((p) => p.project === dir || p.project.startsWith(prefix));
+  }
+
+  private modelsUnder(dir: string): ModelCost[] {
+    const acc: Record<string, ModelCost> = {};
+    for (const proj of this.projectsUnder(dir)) {
+      for (const m of this.data.projectModels[proj.project] || []) {
+        const e = (acc[m.model] ||= {
+          model: m.model,
+          cost: 0,
+          inputCost: 0,
+          outputCost: 0,
+          cacheReadCost: 0,
+          cacheWriteCost: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          messageCount: 0,
+        });
+        e.cost += m.cost;
+        e.inputCost += m.inputCost;
+        e.outputCost += m.outputCost;
+        e.cacheReadCost += m.cacheReadCost;
+        e.cacheWriteCost += m.cacheWriteCost;
+        e.inputTokens += m.inputTokens;
+        e.outputTokens += m.outputTokens;
+        e.messageCount += m.messageCount;
+      }
+    }
+    return Object.values(acc).sort((a, b) => b.cost - a.cost);
+  }
+
+  private dailyUnder(dir: string): DayCost[] {
+    const acc: Record<string, DayCost> = {};
+    for (const proj of this.projectsUnder(dir)) {
+      for (const d of this.data.projectDaily[proj.project] || []) {
+        const e = (acc[d.date] ||= {
+          date: d.date,
+          cost: 0,
+          inputCost: 0,
+          outputCost: 0,
+          cacheReadCost: 0,
+          cacheWriteCost: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          messageCount: 0,
+        });
+        e.cost += d.cost;
+        e.inputCost += d.inputCost;
+        e.outputCost += d.outputCost;
+        e.cacheReadCost += d.cacheReadCost;
+        e.cacheWriteCost += d.cacheWriteCost;
+        e.inputTokens += d.inputTokens;
+        e.outputTokens += d.outputTokens;
+        e.messageCount += d.messageCount;
+      }
+    }
+    return Object.values(acc).sort((a, b) => a.date.localeCompare(b.date));
+  }
+
+  private renderProjects(width: number): string[] {
+    if (!this.projectTree) return ["", "  No per-project cost data found."];
+
+    const colors = this.chartColors();
+    const rows = this.visibleProjectRows();
+    this.projectIndex = clamp(this.projectIndex, 0, Math.max(0, rows.length - 1));
+
+    const lines: string[] = ["", "  Cost by Project (directory)", ""];
+    const maxCost = this.projectTree.cost || 1;
+    const maxBar = 14;
+    const { items, offset } = sliceAround(rows, this.projectIndex, 12);
+
+    for (let i = 0; i < items.length; i++) {
+      const { node, depth } = items[i];
+      const selected = offset + i === this.projectIndex;
+      const marker = selected ? ">" : " ";
+      const twisty = node.children.length > 0 ? (this.expandedProjects.has(node.path) ? "▾ " : "▸ ") : "  ";
+      const name = `${"  ".repeat(depth)}${twisty}${node.label}`;
+      const left = truncateToWidth(name, 32);
+      const leftPadded = left + " ".repeat(Math.max(0, 32 - visibleWidth(left)));
+      const pct = this.data.total > 0 ? (node.cost / this.data.total) * 100 : 0;
+      const barLen = Math.max(1, Math.round((node.cost / maxCost) * maxBar));
+      const bar = colors.heat("█".repeat(barLen), node.cost / maxCost);
+      lines.push(`${marker} ${leftPadded} ${bar} ${formatUsd(node.cost)} (${pct.toFixed(0)}%)`);
+    }
+
+    const sel = rows[this.projectIndex]?.node;
+    if (!sel) return lines;
+
+    lines.push("");
+    lines.push(sel.path);
+    lines.push(
+      `${formatUsd(sel.cost)} · ${sel.projectCount} ${sel.projectCount === 1 ? "project" : "projects"} · ${sel.messageCount} billed messages`,
+    );
+    lines.push(costSplitLine(sel));
+
+    const models = this.modelsUnder(sel.path);
+    if (models.length > 0) {
+      lines.push("");
+      lines.push("Top models here");
+      for (const m of models.slice(0, 5)) {
+        const pct = sel.cost > 0 ? (m.cost / sel.cost) * 100 : 0;
+        lines.push(`  ${m.model.padEnd(22).slice(0, 22)} ${formatUsd(m.cost).padStart(9)}  ${pct.toFixed(0).padStart(3)}%`);
+      }
+    }
+
+    const series = this.dailyUnder(sel.path);
+    if (series.length >= 2) {
+      lines.push("");
+      lines.push(...lineChart(series, width, series[series.length - 1]?.date, colors));
+    }
+
     return lines;
   }
 }
