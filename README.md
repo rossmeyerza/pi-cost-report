@@ -7,7 +7,7 @@ It reads the cost data Pi already records in your session logs — no extra trac
 ```
 ╭────────────────────────────────────────────────────────────╮
 │  Pi Cost Report  All time                                    │
-│  [ Overview ]   Daily    Models    Projects                  │
+│  [ Overview ]   Daily   Weekly   Models   Projects           │
 ├────────────────────────────────────────────────────────────┤
 │  Total Spend:     $204.13                                    │
 │  Cost Split:      in $12.40 · out $58.91 · cache read ...    │
@@ -63,9 +63,9 @@ Pi loads the extension declared in `package.json` under `pi.extensions`
 
 | Key            | Action                          |
 | -------------- | ------------------------------- |
-| `←` / `→`      | switch section (Overview / Daily / Models / Projects) |
+| `←` / `→`      | switch section (Overview / Daily / Weekly / Models / Projects) |
 | `Tab` / `Shift+Tab` | switch section             |
-| `↑` / `↓`      | select a date / model / directory |
+| `↑` / `↓`      | select a day / week / model / directory |
 | `↵` / `Space`  | expand or collapse a directory (Projects section) |
 | `Home` / `End` | jump to first / last            |
 | `q` / `Esc`    | close                           |
@@ -74,6 +74,7 @@ Pi loads the extension declared in `package.json` under `pi.extensions`
 
 - **Overview** — total spend, input/output/cache cost split, session and billed-message counts, date range, and a daily cost trend line chart.
 - **Daily** — a block-character bar chart of daily costs; selecting a day shows that day's cost split and per-model breakdown.
+- **Weekly** — the same bar chart rolled up into Monday-based weeks; selecting a week shows its date range, cost split, average spend per day, and per-model breakdown.
 - **Models** — cost by model with proportional bars and percent-of-total; selecting a model shows its daily spend trend.
 - **Projects** — a directory tree of spend, grouped by each session's working directory (`cwd`). Costs roll up the tree, so a parent folder shows the combined spend of everything beneath it. Expand/collapse directories with `↵`/`Space`; selecting one shows its cost split, top models, and a daily trend across that subtree. Pure pass-through directories are collapsed into a single row for readability.
 

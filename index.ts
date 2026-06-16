@@ -470,7 +470,7 @@ function heatColor(text: string, ratio: number): string {
   return rgb(text, r, g, b);
 }
 
-function verticalBarChart(data: DayCost[], width: number, selectedDate?: string, colors = plainChartColors): string[] {
+function verticalBarChart(data: DayCost[], width: number, selectedDate?: string, colors = plainChartColors, title = "Daily Costs"): string[] {
   if (data.length === 0) return ["  No cost data found."];
 
   // Braille block characters for bar heights (8 levels)
@@ -498,7 +498,7 @@ function verticalBarChart(data: DayCost[], width: number, selectedDate?: string,
   const lines: string[] = [];
 
   // Header
-  lines.push(`  Daily Costs ${colors.dim(`(max: ${formatUsd(maxVal)})`)}`);
+  lines.push(`  ${title} ${colors.dim(`(max: ${formatUsd(maxVal)})`)}`);
   lines.push("");
 
   // Build vertical bar chart (rendered as horizontal rows from top to bottom)
@@ -756,6 +756,88 @@ function buildProjectTree(projects: ProjectCost[]): ProjectTreeNode | null {
   return compress(root);
 }
 
+// --- Weekly aggregation -----------------------------------------------------
+
+// Monday-based start of the ISO week containing the given YYYY-MM-DD date.
+function weekStart(dateStr: string): string {
+  const d = new Date(`${dateStr}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return dateStr;
+  const dow = d.getUTCDay(); // 0=Sun .. 6=Sat
+  const shift = dow === 0 ? -6 : 1 - dow; // move back to Monday
+  d.setUTCDate(d.getUTCDate() + shift);
+  return d.toISOString().slice(0, 10);
+}
+
+// Inclusive end (Sunday) of the week starting on the given Monday.
+function weekEnd(startStr: string): string {
+  const d = new Date(`${startStr}T00:00:00Z`);
+  if (Number.isNaN(d.getTime())) return startStr;
+  d.setUTCDate(d.getUTCDate() + 6);
+  return d.toISOString().slice(0, 10);
+}
+
+function addCostInto(target: Omit<DayCost, "date">, src: Omit<DayCost, "date">): void {
+  target.cost += src.cost;
+  target.inputCost += src.inputCost;
+  target.outputCost += src.outputCost;
+  target.cacheReadCost += src.cacheReadCost;
+  target.cacheWriteCost += src.cacheWriteCost;
+  target.inputTokens += src.inputTokens;
+  target.outputTokens += src.outputTokens;
+  target.messageCount += src.messageCount;
+}
+
+const newDayBucket = (date: string): DayCost => ({
+  date,
+  cost: 0,
+  inputCost: 0,
+  outputCost: 0,
+  cacheReadCost: 0,
+  cacheWriteCost: 0,
+  inputTokens: 0,
+  outputTokens: 0,
+  messageCount: 0,
+});
+
+// Roll daily costs (and per-day model breakdowns) up into Monday-keyed weeks.
+function buildWeekly(daily: DayCost[], dailyModels: Record<string, ModelCost[]>): {
+  weekly: DayCost[];
+  weeklyModels: Record<string, ModelCost[]>;
+} {
+  const weeks: Record<string, DayCost> = {};
+  const weekModels: Record<string, Record<string, ModelCost>> = {};
+
+  for (const day of daily) {
+    if (day.date === "unknown") continue;
+    const key = weekStart(day.date);
+    (weeks[key] ||= newDayBucket(key));
+    addCostInto(weeks[key], day);
+
+    weekModels[key] ||= {};
+    for (const m of dailyModels[day.date] || []) {
+      const e = (weekModels[key][m.model] ||= {
+        model: m.model,
+        cost: 0,
+        inputCost: 0,
+        outputCost: 0,
+        cacheReadCost: 0,
+        cacheWriteCost: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        messageCount: 0,
+      });
+      addCostInto(e, m);
+    }
+  }
+
+  const weekly = Object.values(weeks).sort((a, b) => a.date.localeCompare(b.date));
+  const weeklyModels: Record<string, ModelCost[]> = {};
+  for (const [key, models] of Object.entries(weekModels)) {
+    weeklyModels[key] = Object.values(models).sort((a, b) => b.cost - a.cost);
+  }
+  return { weekly, weeklyModels };
+}
+
 type ProjectRow = { node: ProjectTreeNode; depth: number };
 
 function flattenProjectTree(root: ProjectTreeNode, expanded: Set<string>): ProjectRow[] {
@@ -776,11 +858,14 @@ type ThemeLike = {
 };
 
 class CostsComponent implements Component {
-  private sections = ["Overview", "Daily", "Models", "Projects"];
+  private sections = ["Overview", "Daily", "Weekly", "Models", "Projects"];
   private sectionIndex = 0;
   private dailyIndex: number;
+  private weekIndex: number;
   private modelIndex = 0;
   private projectIndex = 0;
+  private readonly weekly: DayCost[];
+  private readonly weeklyModels: Record<string, ModelCost[]>;
   private readonly projectTree: ProjectTreeNode | null;
   private readonly expandedProjects: Set<string>;
   private cachedWidth?: number;
@@ -794,9 +879,17 @@ class CostsComponent implements Component {
     private readonly onClose: () => void,
   ) {
     this.dailyIndex = Math.max(0, data.daily.length - 1);
+    const { weekly, weeklyModels } = buildWeekly(data.daily, data.dailyModels);
+    this.weekly = weekly;
+    this.weeklyModels = weeklyModels;
+    this.weekIndex = Math.max(0, weekly.length - 1);
     this.projectTree = buildProjectTree(data.byProject);
     // Start with the root expanded so its immediate directories are visible.
     this.expandedProjects = new Set(this.projectTree ? [this.projectTree.path] : []);
+  }
+
+  private section(): string {
+    return this.sections[this.sectionIndex];
   }
 
   private visibleProjectRows(): ProjectRow[] {
@@ -832,22 +925,24 @@ class CostsComponent implements Component {
     }
 
     if (matchesKey(data, Key.home)) {
-      if (this.sectionIndex === 2) this.modelIndex = 0;
-      else if (this.sectionIndex === 3) this.projectIndex = 0;
+      if (this.section() === "Models") this.modelIndex = 0;
+      else if (this.section() === "Projects") this.projectIndex = 0;
+      else if (this.section() === "Weekly") this.weekIndex = 0;
       else this.dailyIndex = 0;
       this.refresh();
       return;
     }
     if (matchesKey(data, Key.end)) {
-      if (this.sectionIndex === 2) this.modelIndex = Math.max(0, this.data.byModel.length - 1);
-      else if (this.sectionIndex === 3) this.projectIndex = Math.max(0, this.visibleProjectRows().length - 1);
+      if (this.section() === "Models") this.modelIndex = Math.max(0, this.data.byModel.length - 1);
+      else if (this.section() === "Projects") this.projectIndex = Math.max(0, this.visibleProjectRows().length - 1);
+      else if (this.section() === "Weekly") this.weekIndex = Math.max(0, this.weekly.length - 1);
       else this.dailyIndex = Math.max(0, this.data.daily.length - 1);
       this.refresh();
       return;
     }
 
     // In the Projects tree, Enter/Space expands or collapses the selected directory.
-    if (this.sectionIndex === 3 && (matchesKey(data, Key.enter) || matchesKey(data, Key.return) || matchesKey(data, Key.space))) {
+    if (this.section() === "Projects" && (matchesKey(data, Key.enter) || matchesKey(data, Key.return) || matchesKey(data, Key.space))) {
       const row = this.visibleProjectRows()[this.projectIndex];
       if (row && row.node.children.length > 0) {
         if (this.expandedProjects.has(row.node.path)) this.expandedProjects.delete(row.node.path);
@@ -858,15 +953,17 @@ class CostsComponent implements Component {
     }
 
     if (matchesKey(data, Key.up)) {
-      if (this.sectionIndex === 2) this.modelIndex = moveIndex(this.modelIndex, -1, this.data.byModel.length);
-      else if (this.sectionIndex === 3) this.projectIndex = moveIndex(this.projectIndex, -1, this.visibleProjectRows().length);
+      if (this.section() === "Models") this.modelIndex = moveIndex(this.modelIndex, -1, this.data.byModel.length);
+      else if (this.section() === "Projects") this.projectIndex = moveIndex(this.projectIndex, -1, this.visibleProjectRows().length);
+      else if (this.section() === "Weekly") this.weekIndex = moveIndex(this.weekIndex, -1, this.weekly.length);
       else this.dailyIndex = moveIndex(this.dailyIndex, -1, this.data.daily.length);
       this.refresh();
       return;
     }
     if (matchesKey(data, Key.down)) {
-      if (this.sectionIndex === 2) this.modelIndex = moveIndex(this.modelIndex, 1, this.data.byModel.length);
-      else if (this.sectionIndex === 3) this.projectIndex = moveIndex(this.projectIndex, 1, this.visibleProjectRows().length);
+      if (this.section() === "Models") this.modelIndex = moveIndex(this.modelIndex, 1, this.data.byModel.length);
+      else if (this.section() === "Projects") this.projectIndex = moveIndex(this.projectIndex, 1, this.visibleProjectRows().length);
+      else if (this.section() === "Weekly") this.weekIndex = moveIndex(this.weekIndex, 1, this.weekly.length);
       else this.dailyIndex = moveIndex(this.dailyIndex, 1, this.data.daily.length);
       this.refresh();
     }
@@ -895,11 +992,13 @@ class CostsComponent implements Component {
     lines.push(boxLine(this.renderTabs()));
     lines.push(rule("├", "┤"));
 
-    if (this.sectionIndex === 0) {
+    if (this.section() === "Overview") {
       lines.push(...this.renderOverview(contentWidth).map(boxLine));
-    } else if (this.sectionIndex === 1) {
+    } else if (this.section() === "Daily") {
       lines.push(...this.renderDaily(contentWidth).map(boxLine));
-    } else if (this.sectionIndex === 2) {
+    } else if (this.section() === "Weekly") {
+      lines.push(...this.renderWeekly(contentWidth).map(boxLine));
+    } else if (this.section() === "Models") {
       lines.push(...this.renderModels(contentWidth).map(boxLine));
     } else {
       lines.push(...this.renderProjects(contentWidth).map(boxLine));
@@ -907,9 +1006,10 @@ class CostsComponent implements Component {
 
     lines.push(rule("├", "┤"));
     let where = "select date";
-    if (this.sectionIndex === 2) where = "select model";
-    else if (this.sectionIndex === 3) where = "select dir";
-    const expandHint = this.sectionIndex === 3 ? ` · ${this.theme.fg("dim", "↵/Space")} expand` : "";
+    if (this.section() === "Models") where = "select model";
+    else if (this.section() === "Projects") where = "select dir";
+    else if (this.section() === "Weekly") where = "select week";
+    const expandHint = this.section() === "Projects" ? ` · ${this.theme.fg("dim", "↵/Space")} expand` : "";
     lines.push(boxLine(`${this.theme.fg("dim", "←/→")} section · ${this.theme.fg("dim", "↑/↓")} ${where}${expandHint} · ${this.theme.fg("dim", "Home/End")} jump · ${this.theme.fg("dim", "q/Esc")} close`));
     lines.push(rule("╰", "╯"));
 
@@ -981,6 +1081,38 @@ class CostsComponent implements Component {
     lines.push("");
     for (const model of models.slice(0, 8)) {
       const pct = selectedDay.cost > 0 ? (model.cost / selectedDay.cost) * 100 : 0;
+      lines.push(`  ${model.model.padEnd(22).slice(0, 22)} ${formatUsd(model.cost).padStart(9)}  ${pct.toFixed(0).padStart(3)}%`);
+    }
+    return lines;
+  }
+
+  private renderWeekly(width: number): string[] {
+    if (this.weekly.length === 0) return ["", "  No weekly cost data found."];
+    this.weekIndex = clamp(this.weekIndex, 0, Math.max(0, this.weekly.length - 1));
+    const selectedWeek = this.weekly[this.weekIndex];
+    const lines: string[] = [
+      "",
+      ...verticalBarChart(this.weekly, width, selectedWeek?.date, this.chartColors(), "Weekly Costs (week starting)"),
+      "",
+    ];
+
+    if (!selectedWeek) return [...lines, "No weekly data."];
+    const avgPerDay = selectedWeek.cost / 7;
+    lines.push(
+      `Week of ${selectedWeek.date} – ${weekEnd(selectedWeek.date)} · ${formatUsd(selectedWeek.cost)} · ${selectedWeek.messageCount} billed messages`,
+    );
+    lines.push(`${costSplitLine(selectedWeek)} · avg ${formatUsd(avgPerDay)}/day`);
+    lines.push("");
+
+    const models = this.weeklyModels[selectedWeek.date] || [];
+    if (models.length === 0) {
+      lines.push("No model data for this week.");
+      return lines;
+    }
+    lines.push("Models this week");
+    lines.push("");
+    for (const model of models.slice(0, 8)) {
+      const pct = selectedWeek.cost > 0 ? (model.cost / selectedWeek.cost) * 100 : 0;
       lines.push(`  ${model.model.padEnd(22).slice(0, 22)} ${formatUsd(model.cost).padStart(9)}  ${pct.toFixed(0).padStart(3)}%`);
     }
     return lines;
