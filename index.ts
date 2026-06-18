@@ -864,6 +864,9 @@ class CostsComponent implements Component {
   private weekIndex: number;
   private modelIndex = 0;
   private projectIndex = 0;
+  // Which breakdown accordion is open per tab (toggled with Space).
+  // Daily/Weekly: 0 = by model, 1 = by project. Models: 0 = by day, 1 = by project.
+  private breakdownOpen: Record<string, number> = { Daily: 0, Weekly: 0, Models: 0 };
   private readonly weekly: DayCost[];
   private readonly weeklyModels: Record<string, ModelCost[]>;
   private readonly projectTree: ProjectTreeNode | null;
@@ -952,6 +955,17 @@ class CostsComponent implements Component {
       return;
     }
 
+    // Daily/Weekly/Models: Space/Enter toggles the breakdown accordion (by model ↔ by project, etc.).
+    if (
+      (this.section() === "Daily" || this.section() === "Weekly" || this.section() === "Models") &&
+      (matchesKey(data, Key.enter) || matchesKey(data, Key.return) || matchesKey(data, Key.space))
+    ) {
+      const s = this.section();
+      this.breakdownOpen[s] = ((this.breakdownOpen[s] ?? 0) + 1) % 2;
+      this.refresh();
+      return;
+    }
+
     if (matchesKey(data, Key.up)) {
       if (this.section() === "Models") this.modelIndex = moveIndex(this.modelIndex, -1, this.data.byModel.length);
       else if (this.section() === "Projects") this.projectIndex = moveIndex(this.projectIndex, -1, this.visibleProjectRows().length);
@@ -1009,7 +1023,10 @@ class CostsComponent implements Component {
     if (this.section() === "Models") where = "select model";
     else if (this.section() === "Projects") where = "select dir";
     else if (this.section() === "Weekly") where = "select week";
-    const expandHint = this.section() === "Projects" ? ` · ${this.theme.fg("dim", "↵/Space")} expand` : "";
+    let expandHint = "";
+    if (this.section() === "Projects") expandHint = ` · ${this.theme.fg("dim", "↵/Space")} expand`;
+    else if (this.section() === "Daily" || this.section() === "Weekly" || this.section() === "Models")
+      expandHint = ` · ${this.theme.fg("dim", "Space")} breakdown`;
     lines.push(boxLine(`${this.theme.fg("dim", "←/→")} section · ${this.theme.fg("dim", "↑/↓")} ${where}${expandHint} · ${this.theme.fg("dim", "Home/End")} jump · ${this.theme.fg("dim", "q/Esc")} close`));
     lines.push(rule("╰", "╯"));
 
@@ -1073,16 +1090,13 @@ class CostsComponent implements Component {
     lines.push("");
 
     const models = this.data.dailyModels[selectedDay.date] || [];
-    if (models.length === 0) {
-      lines.push("No model data for this date.");
-      return lines;
-    }
-    lines.push("Models on selected date");
-    lines.push("");
-    for (const model of models.slice(0, 8)) {
-      const pct = selectedDay.cost > 0 ? (model.cost / selectedDay.cost) * 100 : 0;
-      lines.push(`  ${model.model.padEnd(22).slice(0, 22)} ${formatUsd(model.cost).padStart(9)}  ${pct.toFixed(0).padStart(3)}%`);
-    }
+    const projects = this.projectsForDay(selectedDay.date);
+    lines.push(
+      ...this.renderAccordion("Daily", [
+        { label: "By model", count: models.length, render: () => this.modelBreakdownRows(models, selectedDay.cost) },
+        { label: "By project", count: projects.length, render: () => this.projectBreakdownRows(projects, selectedDay.cost) },
+      ]),
+    );
     return lines;
   }
 
@@ -1105,16 +1119,13 @@ class CostsComponent implements Component {
     lines.push("");
 
     const models = this.weeklyModels[selectedWeek.date] || [];
-    if (models.length === 0) {
-      lines.push("No model data for this week.");
-      return lines;
-    }
-    lines.push("Models this week");
-    lines.push("");
-    for (const model of models.slice(0, 8)) {
-      const pct = selectedWeek.cost > 0 ? (model.cost / selectedWeek.cost) * 100 : 0;
-      lines.push(`  ${model.model.padEnd(22).slice(0, 22)} ${formatUsd(model.cost).padStart(9)}  ${pct.toFixed(0).padStart(3)}%`);
-    }
+    const projects = this.projectsForWeek(selectedWeek.date);
+    lines.push(
+      ...this.renderAccordion("Weekly", [
+        { label: "By model", count: models.length, render: () => this.modelBreakdownRows(models, selectedWeek.cost) },
+        { label: "By project", count: projects.length, render: () => this.projectBreakdownRows(projects, selectedWeek.cost) },
+      ]),
+    );
     return lines;
   }
 
@@ -1134,8 +1145,90 @@ class CostsComponent implements Component {
     lines.push(`${selected.model} · ${formatUsd(selected.cost)} · ${selected.messageCount} billed messages`);
     lines.push(costSplitLine(selected));
     lines.push("");
-    lines.push(...lineChart(series, width, series[series.length - 1]?.date, this.chartColors()));
+    const projects = this.projectsForModel(selected.model);
+    lines.push(
+      ...this.renderAccordion("Models", [
+        { label: "By day", render: () => lineChart(series, width, series[series.length - 1]?.date, this.chartColors()) },
+        { label: "By project", count: projects.length, render: () => this.projectBreakdownRows(projects, selected.cost) },
+      ]),
+    );
     return lines;
+  }
+
+  // --- Cross breakdowns (model ↔ project) for the Daily/Weekly/Models tabs ---
+
+  // Render a set of collapsible sections; only the open one shows its body.
+  private renderAccordion(tab: string, sections: { label: string; count?: number; render: () => string[] }[]): string[] {
+    const open = (((this.breakdownOpen[tab] ?? 0) % sections.length) + sections.length) % sections.length;
+    const out: string[] = [];
+    for (let i = 0; i < sections.length; i++) {
+      const s = sections[i];
+      const isOpen = i === open;
+      const twisty = this.theme.fg("accent", isOpen ? "▾" : "▸");
+      const label = isOpen ? this.theme.bold(s.label) : this.theme.fg("dim", s.label);
+      const count = s.count !== undefined ? ` ${this.theme.fg("dim", `(${s.count})`)}` : "";
+      out.push(`${twisty} ${label}${count}`);
+      if (isOpen) {
+        out.push("");
+        out.push(...s.render());
+      }
+    }
+    return out;
+  }
+
+  private shortenPath(p: string, max: number): string {
+    const home = process.env.HOME || "";
+    let s = home && p.startsWith(home) ? `~${p.slice(home.length)}` : p;
+    if (s.length > max) s = `…${s.slice(s.length - (max - 1))}`;
+    return s;
+  }
+
+  private breakdownRow(name: string, cost: number, max: number, total: number): string {
+    const pct = total > 0 ? (cost / total) * 100 : 0;
+    const ratio = max > 0 ? cost / max : 0;
+    const barLen = clamp(Math.round(ratio * 10), 1, 10);
+    const bar = heatColor("█".repeat(barLen), ratio) + " ".repeat(10 - barLen);
+    return `  ${name.padEnd(24).slice(0, 24)} ${bar} ${formatUsd(cost).padStart(9)} ${pct.toFixed(0).padStart(3)}%`;
+  }
+
+  private modelBreakdownRows(models: ModelCost[], total: number): string[] {
+    if (models.length === 0) return ["  (no model data)"];
+    const max = Math.max(...models.map((m) => m.cost), 1e-9);
+    return models.slice(0, 10).map((m) => this.breakdownRow(m.model, m.cost, max, total));
+  }
+
+  private projectBreakdownRows(projects: { project: string; cost: number }[], total: number): string[] {
+    if (projects.length === 0) return ["  (no project data)"];
+    const max = Math.max(...projects.map((p) => p.cost), 1e-9);
+    return projects.slice(0, 10).map((p) => this.breakdownRow(this.shortenPath(p.project, 24), p.cost, max, total));
+  }
+
+  private projectsForDay(date: string): { project: string; cost: number }[] {
+    const out: { project: string; cost: number }[] = [];
+    for (const p of this.data.byProject) {
+      const day = (this.data.projectDaily[p.project] || []).find((d) => d.date === date);
+      if (day && day.cost > 0) out.push({ project: p.project, cost: day.cost });
+    }
+    return out.sort((a, b) => b.cost - a.cost);
+  }
+
+  private projectsForWeek(weekStartDate: string): { project: string; cost: number }[] {
+    const acc: Record<string, number> = {};
+    for (const p of this.data.byProject) {
+      for (const d of this.data.projectDaily[p.project] || []) {
+        if (d.cost > 0 && weekStart(d.date) === weekStartDate) acc[p.project] = (acc[p.project] || 0) + d.cost;
+      }
+    }
+    return Object.entries(acc).map(([project, cost]) => ({ project, cost })).sort((a, b) => b.cost - a.cost);
+  }
+
+  private projectsForModel(model: string): { project: string; cost: number }[] {
+    const out: { project: string; cost: number }[] = [];
+    for (const p of this.data.byProject) {
+      const m = (this.data.projectModels[p.project] || []).find((x) => x.model === model);
+      if (m && m.cost > 0) out.push({ project: p.project, cost: m.cost });
+    }
+    return out.sort((a, b) => b.cost - a.cost);
   }
 
   // Every leaf project (cwd) at or beneath a directory path.
