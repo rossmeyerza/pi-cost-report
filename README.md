@@ -66,7 +66,7 @@ Pi loads the extension declared in `package.json` under `pi.extensions`
 | `←` / `→`      | switch section (Overview / Daily / Weekly / Models / Projects) |
 | `Tab` / `Shift+Tab` | switch section             |
 | `↑` / `↓`      | select a day / week / model / directory |
-| `Space`        | switch the breakdown accordion (Daily / Weekly / Models) |
+| `b`            | switch the breakdown accordion — by model ↔ by project (Daily / Weekly / Models) |
 | `↵` / `Space`  | expand or collapse a directory (Projects section) |
 | `Home` / `End` | jump to first / last            |
 | `q` / `Esc`    | close                           |
@@ -74,9 +74,9 @@ Pi loads the extension declared in `package.json` under `pi.extensions`
 ### Sections
 
 - **Overview** — total spend, input/output/cache cost split, session and billed-message counts, date range, and a daily cost trend line chart.
-- **Daily** — a block-character bar chart of daily costs; selecting a day shows that day's cost split, then a breakdown accordion you toggle with `Space`: **By model** ↔ **By project** (which directories the spend came from that day), each with heat bars and percentages.
-- **Weekly** — the same bar chart rolled up into Monday-based weeks; selecting a week shows its date range, cost split, average spend per day, and the same `Space`-toggled **By model** ↔ **By project** breakdown for the week.
-- **Models** — cost by model with proportional bars and percent-of-total; selecting a model shows a `Space`-toggled accordion: **By day** (its daily spend trend) ↔ **By project** (which directories used that model).
+- **Daily** — a block-character bar chart of daily costs; selecting a day shows that day's cost split, then a breakdown accordion you toggle with `b`: **By model** ↔ **By project** (which directories the spend came from that day), each with heat bars and percentages.
+- **Weekly** — the same bar chart rolled up into Monday-based weeks; selecting a week shows its date range, cost split, average spend per day, and the same `b`-toggled **By model** ↔ **By project** breakdown for the week.
+- **Models** — cost by model with proportional bars and percent-of-total; selecting a model shows a `b`-toggled accordion: **By day** (its daily spend trend) ↔ **By project** (which directories used that model).
 - **Projects** — a directory tree of spend, grouped by each session's working directory (`cwd`). Costs roll up the tree, so a parent folder shows the combined spend of everything beneath it. Expand/collapse directories with `↵`/`Space`; selecting one shows its cost split, top models, and a daily trend across that subtree. Pure pass-through directories are collapsed into a single row for readability.
 
 ## How it works

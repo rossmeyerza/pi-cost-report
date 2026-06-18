@@ -955,10 +955,12 @@ class CostsComponent implements Component {
       return;
     }
 
-    // Daily/Weekly/Models: Space/Enter toggles the breakdown accordion (by model ↔ by project, etc.).
+    // Daily/Weekly/Models: "b" toggles the breakdown accordion (by model ↔ by project, etc.).
+    // Space/Enter also work, but "b" is the advertised key since the pi-voice extension
+    // intercepts Space when loaded.
     if (
       (this.section() === "Daily" || this.section() === "Weekly" || this.section() === "Models") &&
-      (matchesKey(data, Key.enter) || matchesKey(data, Key.return) || matchesKey(data, Key.space))
+      (data.toLowerCase() === "b" || matchesKey(data, Key.enter) || matchesKey(data, Key.return) || matchesKey(data, Key.space))
     ) {
       const s = this.section();
       this.breakdownOpen[s] = ((this.breakdownOpen[s] ?? 0) + 1) % 2;
@@ -1026,7 +1028,7 @@ class CostsComponent implements Component {
     let expandHint = "";
     if (this.section() === "Projects") expandHint = ` · ${this.theme.fg("dim", "↵/Space")} expand`;
     else if (this.section() === "Daily" || this.section() === "Weekly" || this.section() === "Models")
-      expandHint = ` · ${this.theme.fg("dim", "Space")} breakdown`;
+      expandHint = ` · ${this.theme.fg("dim", "b")} breakdown`;
     lines.push(boxLine(`${this.theme.fg("dim", "←/→")} section · ${this.theme.fg("dim", "↑/↓")} ${where}${expandHint} · ${this.theme.fg("dim", "Home/End")} jump · ${this.theme.fg("dim", "q/Esc")} close`));
     lines.push(rule("╰", "╯"));
 
