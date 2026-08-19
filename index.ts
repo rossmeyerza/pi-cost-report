@@ -988,19 +988,21 @@ class CostsComponent implements Component {
   render(width: number): string[] {
     if (this.cachedLines && this.cachedWidth === width) return this.cachedLines;
 
-    const boxWidth = Math.max(20, Math.min(width, 120));
-    const contentWidth = boxWidth - 4;
+    const terminalWidth = Math.max(1, width);
+    const boxWidth = Math.max(1, Math.min(terminalWidth, 120));
+    const contentWidth = Math.max(0, boxWidth - 6);
     const lines: string[] = [];
     const pad = (line: string) => {
-      const extra = Math.max(0, width - visibleWidth(line));
+      const extra = Math.max(0, boxWidth - visibleWidth(line));
       return line + " ".repeat(extra);
     };
+    const fit = (line: string) => truncateToWidth(line, terminalWidth);
     const boxLine = (content = "") => {
       const clipped = truncateToWidth(content, contentWidth);
       const rightPad = Math.max(0, contentWidth - visibleWidth(clipped));
-      return pad(this.theme.fg("borderMuted", "│") + "  " + clipped + " ".repeat(rightPad) + "  " + this.theme.fg("borderMuted", "│"));
+      return fit(pad(this.theme.fg("borderMuted", "│") + "  " + clipped + " ".repeat(rightPad) + "  " + this.theme.fg("borderMuted", "│")));
     };
-    const rule = (left: string, right: string) => pad(this.theme.fg("borderMuted", left + "─".repeat(boxWidth - 2) + right));
+    const rule = (left: string, right: string) => fit(pad(this.theme.fg("borderMuted", left + "─".repeat(Math.max(0, boxWidth - 2)) + right)));
 
     lines.push("");
     lines.push(rule("╭", "╮"));
@@ -1033,8 +1035,8 @@ class CostsComponent implements Component {
     lines.push(rule("╰", "╯"));
 
     this.cachedWidth = width;
-    this.cachedLines = lines;
-    return lines;
+    this.cachedLines = lines.map(fit);
+    return this.cachedLines;
   }
 
   private renderTabs(): string {
