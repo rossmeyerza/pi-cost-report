@@ -216,7 +216,10 @@ function normalizeProvider(input: string): string {
   return (input || "").trim().toLowerCase();
 }
 
-function parseProviderFromModel(model: string): string {
+function parseProviderFromModel(model: string, providerHint?: unknown): string {
+  const hinted = normalizeProvider(typeof providerHint === "string" ? providerHint : "");
+  if (hinted) return hinted;
+
   const raw = (model || "").trim();
   if (!raw) return "unknown";
 
@@ -361,7 +364,7 @@ async function scanSessions(fromDate = "0000-01-01", toDate?: string, providerFi
         if (!cost || cost <= 0) continue;
 
         const model = msg.model || "unknown";
-        const provider = parseProviderFromModel(msg.provider || model);
+        const provider = parseProviderFromModel(model, msg.provider);
         if (providerFilterKey && provider !== providerFilterKey) continue;
 
         let day = "unknown";
