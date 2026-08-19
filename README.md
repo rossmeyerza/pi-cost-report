@@ -68,7 +68,7 @@ Pi loads the extension declared in `package.json` under `pi.extensions`
 | `←` / `→`      | switch section (Overview / Daily / Weekly / Models / Providers / Projects) |
 | `Tab` / `Shift+Tab` | switch section                                     |
 | `↑` / `↓`      | select a day / week / model / provider / directory       |
-| `b`            | switch the breakdown accordion — by model/provider ↔ by project (Daily / Weekly / Models / Providers) |
+| `b`            | switch the active breakdown accordion (Daily / Weekly / Models / Providers) |
 | `↵` / `Space`  | expand or collapse a directory (Projects section)         |
 | `Home` / `End` | jump to first / last                                     |
 | `q` / `Esc`    | close                                                    |
@@ -76,18 +76,17 @@ Pi loads the extension declared in `package.json` under `pi.extensions`
 ### Sections
 
 - **Overview** — total spend, input/output/cache cost split, session and billed-message counts, date range, and a daily cost trend line chart.
-- **Daily** — a block-character bar chart of daily costs; selecting a day shows that day's cost split, then a breakdown accordion you toggle with `b`: **By model** ↔ **By project** (which directories the spend came from that day), each with heat bars and percentages.
-- **Weekly** — the same bar chart rolled up into Monday-based weeks; selecting a week shows its date range, cost split, average spend per day, and the same `b`-toggled **By model** ↔ **By project** breakdown for the week.
-- **Models** — cost by model with proportional bars and percent-of-total; selecting a model shows a `b`-toggled accordion: **By day** (its daily spend trend) ↔ **By project** (which directories used that model).
+- **Daily** — a block-character bar chart of daily costs; selecting a day shows that day's cost split, then a breakdown accordion you toggle with `b`: **By model** ↔ **By provider** ↔ **By project** (which directories the spend came from that day), each with heat bars and percentages.
+- **Weekly** — the same bar chart rolled up into Monday-based weeks; selecting a week shows its date range, cost split, average spend per day, and the same `b`-toggled **By model** ↔ **By provider** ↔ **By project** breakdown for the week.
+- **Models** — cost by model with proportional bars and percent-of-total; selecting a model shows a `b`-toggled accordion: **By day** (its daily spend trend) ↔ **By project** (which directories used that model) ↔ **By provider** (which providers served that model).
 - **Providers** — cost by provider with proportional bars and percent-of-total. Selecting a provider shows a `b`-toggled accordion: **By day** (its daily spend trend) ↔ **By project** (which directories used that provider).
-- **Projects** — a directory tree of spend, grouped by each session's working directory (`cwd`). Costs roll up the tree, so a parent folder shows the combined spend of everything beneath it. Expand/collapse directories with `↵`/`Space`; selecting one shows its cost split, top models, and a daily trend across that subtree. Pure pass-through directories are collapsed into a single row for readability.
+- **Projects** — a directory tree of spend, grouped by each session's working directory (`cwd`). Costs roll up the tree, so a parent folder shows the combined spend of everything beneath it. Expand/collapse directories with `↵`/`Space`; selecting one shows its cost split, top models, top providers, and a daily trend across that subtree. Pure pass-through directories are collapsed into a single row for readability.
 
 ## How it works
 
 The extension scans `~/.pi/agent/sessions/**/*.jsonl` (overridable via the
-`PI_CODING_AGENT_DIR` environment variable). For each assistant message it reads
-`message.usage.cost` and `message.model`, buckets the spend by day and model,
-and renders the charts.
+`PI_CODING_AGENT_DIR` environment variable). For each assistant message it reads `message.usage.cost`, `message.model`, and `message.provider` when present,
+and buckets the spend by day, model, project, and provider.
 
 Notes:
 

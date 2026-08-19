@@ -81,6 +81,7 @@ interface CostData {
   projectDaily: Record<string, DayCost[]>;
   projectModels: Record<string, ModelCost[]>;
   projectProviders: Record<string, ProviderCost[]>;
+  modelProviders: Record<string, ProviderCost[]>;
   total: number;
   inputCost: number;
   outputCost: number;
@@ -247,6 +248,7 @@ function emptyCostData(): CostData {
     projectDaily: {},
     projectModels: {},
     projectProviders: {},
+    modelProviders: {},
     total: 0,
     inputCost: 0,
     outputCost: 0,
@@ -298,6 +300,7 @@ async function scanSessions(fromDate = "0000-01-01", toDate?: string, providerFi
   const projectDays: Record<string, Record<string, MutableCost>> = {};
   const projectModels: Record<string, Record<string, MutableCost>> = {};
   const projectProviders: Record<string, Record<string, MutableCost>> = {};
+  const modelProviders: Record<string, Record<string, MutableCost>> = {};
   const projectSessions: Record<string, Set<string>> = {};
   let total = 0;
   let inputCost = 0;
@@ -428,6 +431,17 @@ async function scanSessions(fromDate = "0000-01-01", toDate?: string, providerFi
         dailyProviders[day][provider].outputTokens += usageOutputTokens;
         dailyProviders[day][provider].messageCount += 1;
 
+        modelProviders[model] ||= {};
+        modelProviders[model][provider] ||= newMutableCost();
+        modelProviders[model][provider].cost += cost;
+        modelProviders[model][provider].inputCost += usageInputCost;
+        modelProviders[model][provider].outputCost += usageOutputCost;
+        modelProviders[model][provider].cacheReadCost += usageCacheReadCost;
+        modelProviders[model][provider].cacheWriteCost += usageCacheWriteCost;
+        modelProviders[model][provider].inputTokens += usageInputTokens;
+        modelProviders[model][provider].outputTokens += usageOutputTokens;
+        modelProviders[model][provider].messageCount += 1;
+
         byProject[sessionCwd] ||= newMutableCost();
         byProject[sessionCwd].cost += cost;
         byProject[sessionCwd].inputCost += usageInputCost;
@@ -513,6 +527,13 @@ async function scanSessions(fromDate = "0000-01-01", toDate?: string, providerFi
       .sort((a, b) => b.cost - a.cost);
   }
 
+  const modelProviderArr: Record<string, ProviderCost[]> = {};
+  for (const [model, providers] of Object.entries(modelProviders)) {
+    modelProviderArr[model] = Object.entries(providers)
+      .map(([provider, value]) => ({ provider, ...value }))
+      .sort((a, b) => b.cost - a.cost);
+  }
+
   const projectArr: ProjectCost[] = Object.entries(byProject)
     .map(([project, cost]) => ({ project, ...cost, sessionCount: projectSessions[project]?.size || 0 }))
     .sort((a, b) => b.cost - a.cost);
@@ -548,6 +569,7 @@ async function scanSessions(fromDate = "0000-01-01", toDate?: string, providerFi
     projectDaily: projectDailyArr,
     projectModels: projectModelArr,
     projectProviders: projectProviderArr,
+    modelProviders: modelProviderArr,
     total,
     inputCost,
     outputCost,
@@ -1301,10 +1323,12 @@ class CostsComponent implements Component {
     lines.push("");
 
     const models = this.data.dailyModels[selectedDay.date] || [];
+    const providers = this.data.dailyProviders[selectedDay.date] || [];
     const projects = this.projectsForDay(selectedDay.date);
     lines.push(
       ...this.renderAccordion("Daily", [
         { label: "By model", count: models.length, render: () => this.modelBreakdownRows(models, selectedDay.cost) },
+        { label: "By provider", count: providers.length, render: () => this.providerBreakdownRows(providers, selectedDay.cost) },
         { label: "By project", count: projects.length, render: () => this.projectBreakdownRows(projects, selectedDay.cost) },
       ]),
     );
@@ -1330,10 +1354,12 @@ class CostsComponent implements Component {
     lines.push("");
 
     const models = this.weeklyModels[selectedWeek.date] || [];
+    const providers = this.providersForWeek(selectedWeek.date);
     const projects = this.projectsForWeek(selectedWeek.date);
     lines.push(
       ...this.renderAccordion("Weekly", [
         { label: "By model", count: models.length, render: () => this.modelBreakdownRows(models, selectedWeek.cost) },
+        { label: "By provider", count: providers.length, render: () => this.providerBreakdownRows(providers, selectedWeek.cost) },
         { label: "By project", count: projects.length, render: () => this.projectBreakdownRows(projects, selectedWeek.cost) },
       ]),
     );
@@ -1357,10 +1383,12 @@ class CostsComponent implements Component {
     lines.push(costSplitLine(selected));
     lines.push("");
     const projects = this.projectsForModel(selected.model);
+    const providers = this.providersForModel(selected.model);
     lines.push(
       ...this.renderAccordion("Models", [
         { label: "By day", render: () => lineChart(series, width, series[series.length - 1]?.date, this.chartColors()) },
         { label: "By project", count: projects.length, render: () => this.projectBreakdownRows(projects, selected.cost) },
+        { label: "By provider", count: providers.length, render: () => this.providerBreakdownRows(providers, selected.cost) },
       ]),
     );
     return lines;
@@ -1434,6 +1462,12 @@ class CostsComponent implements Component {
     return models.slice(0, 10).map((m) => this.breakdownRow(m.model, m.cost, max, total));
   }
 
+  private providerBreakdownRows(providers: { provider: string; cost: number }[], total: number): string[] {
+    if (providers.length === 0) return ["  (no provider data)"];
+    const max = Math.max(...providers.map((p) => p.cost), 1e-9);
+    return providers.slice(0, 10).map((p) => this.breakdownRow(p.provider, p.cost, max, total));
+  }
+
   private projectBreakdownRows(projects: { project: string; cost: number }[], total: number): string[] {
     if (projects.length === 0) return ["  (no project data)"];
     const max = Math.max(...projects.map((p) => p.cost), 1e-9);
@@ -1466,6 +1500,24 @@ class CostsComponent implements Component {
       if (m && m.cost > 0) out.push({ project: p.project, cost: m.cost });
     }
     return out.sort((a, b) => b.cost - a.cost);
+  }
+
+  private providersForWeek(weekStartDate: string): { provider: string; cost: number }[] {
+    const acc: Record<string, number> = {};
+    for (const day of this.data.daily) {
+      if (day.cost <= 0 || weekStart(day.date) !== weekStartDate) continue;
+      for (const p of this.data.dailyProviders[day.date] || []) {
+        acc[p.provider] = (acc[p.provider] || 0) + p.cost;
+      }
+    }
+    return Object.entries(acc)
+      .map(([provider, cost]) => ({ provider, cost }))
+      .filter((item) => item.cost > 0)
+      .sort((a, b) => b.cost - a.cost);
+  }
+
+  private providersForModel(model: string): { provider: string; cost: number }[] {
+    return this.data.modelProviders[model] || [];
   }
 
   private projectsForProvider(provider: string): { project: string; cost: number }[] {
@@ -1539,6 +1591,34 @@ class CostsComponent implements Component {
     return Object.values(acc).sort((a, b) => a.date.localeCompare(b.date));
   }
 
+  private providersUnder(dir: string): ProviderCost[] {
+    const acc: Record<string, ProviderCost> = {};
+    for (const proj of this.projectsUnder(dir)) {
+      for (const m of this.data.projectProviders[proj.project] || []) {
+        const e = (acc[m.provider] ||= {
+          provider: m.provider,
+          cost: 0,
+          inputCost: 0,
+          outputCost: 0,
+          cacheReadCost: 0,
+          cacheWriteCost: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          messageCount: 0,
+        });
+        e.cost += m.cost;
+        e.inputCost += m.inputCost;
+        e.outputCost += m.outputCost;
+        e.cacheReadCost += m.cacheReadCost;
+        e.cacheWriteCost += m.cacheWriteCost;
+        e.inputTokens += m.inputTokens;
+        e.outputTokens += m.outputTokens;
+        e.messageCount += m.messageCount;
+      }
+    }
+    return Object.values(acc).sort((a, b) => b.cost - a.cost);
+  }
+
   private renderProjects(width: number): string[] {
     if (!this.projectTree) return ["", "  No per-project cost data found."];
 
@@ -1582,6 +1662,16 @@ class CostsComponent implements Component {
       for (const m of models.slice(0, 5)) {
         const pct = sel.cost > 0 ? (m.cost / sel.cost) * 100 : 0;
         lines.push(`  ${m.model.padEnd(22).slice(0, 22)} ${formatUsd(m.cost).padStart(9)}  ${pct.toFixed(0).padStart(3)}%`);
+      }
+    }
+
+    const providers = this.providersUnder(sel.path);
+    if (providers.length > 0) {
+      lines.push("");
+      lines.push("Top providers here");
+      for (const p of providers.slice(0, 5)) {
+        const pct = sel.cost > 0 ? (p.cost / sel.cost) * 100 : 0;
+        lines.push(`  ${p.provider.padEnd(22).slice(0, 22)} ${formatUsd(p.cost).padStart(9)}  ${pct.toFixed(0).padStart(3)}%`);
       }
     }
 
