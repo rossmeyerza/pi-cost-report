@@ -55,21 +55,23 @@ Pi loads the extension declared in `package.json` under `pi.extensions`
 /costs today        today only
 /costs 7            last 7 days (any number works: /costs 30)
 /costs week         last 7 days
-/costs month        the current calendar month
-/costs 2026-04      a specific month (YYYY-MM)
+/costs month                  the current calendar month
+/costs 2026-04                a specific month (YYYY-MM)
+/costs provider=<provider>     spend only from one provider (for example /costs provider=google)
+/costs 14 provider=openai      combine with period filter
 ```
 
 ### Navigating the UI
 
-| Key            | Action                          |
-| -------------- | ------------------------------- |
-| `←` / `→`      | switch section (Overview / Daily / Weekly / Models / Projects) |
-| `Tab` / `Shift+Tab` | switch section             |
-| `↑` / `↓`      | select a day / week / model / directory |
-| `b`            | switch the breakdown accordion — by model ↔ by project (Daily / Weekly / Models) |
-| `↵` / `Space`  | expand or collapse a directory (Projects section) |
-| `Home` / `End` | jump to first / last            |
-| `q` / `Esc`    | close                           |
+| Key            | Action                                                   |
+| -------------- | -------------------------------------------------------- |
+| `←` / `→`      | switch section (Overview / Daily / Weekly / Models / Providers / Projects) |
+| `Tab` / `Shift+Tab` | switch section                                     |
+| `↑` / `↓`      | select a day / week / model / provider / directory       |
+| `b`            | switch the breakdown accordion — by model/provider ↔ by project (Daily / Weekly / Models / Providers) |
+| `↵` / `Space`  | expand or collapse a directory (Projects section)         |
+| `Home` / `End` | jump to first / last                                     |
+| `q` / `Esc`    | close                                                    |
 
 ### Sections
 
@@ -77,6 +79,7 @@ Pi loads the extension declared in `package.json` under `pi.extensions`
 - **Daily** — a block-character bar chart of daily costs; selecting a day shows that day's cost split, then a breakdown accordion you toggle with `b`: **By model** ↔ **By project** (which directories the spend came from that day), each with heat bars and percentages.
 - **Weekly** — the same bar chart rolled up into Monday-based weeks; selecting a week shows its date range, cost split, average spend per day, and the same `b`-toggled **By model** ↔ **By project** breakdown for the week.
 - **Models** — cost by model with proportional bars and percent-of-total; selecting a model shows a `b`-toggled accordion: **By day** (its daily spend trend) ↔ **By project** (which directories used that model).
+- **Providers** — cost by provider with proportional bars and percent-of-total. Selecting a provider shows a `b`-toggled accordion: **By day** (its daily spend trend) ↔ **By project** (which directories used that provider).
 - **Projects** — a directory tree of spend, grouped by each session's working directory (`cwd`). Costs roll up the tree, so a parent folder shows the combined spend of everything beneath it. Expand/collapse directories with `↵`/`Space`; selecting one shows its cost split, top models, and a daily trend across that subtree. Pure pass-through directories are collapsed into a single row for readability.
 
 ## How it works

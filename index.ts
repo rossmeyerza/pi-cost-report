@@ -28,6 +28,18 @@ interface ModelCost {
   messageCount: number;
 }
 
+interface ProviderCost {
+  provider: string;
+  cost: number;
+  inputCost: number;
+  outputCost: number;
+  cacheReadCost: number;
+  cacheWriteCost: number;
+  inputTokens: number;
+  outputTokens: number;
+  messageCount: number;
+}
+
 interface ProjectCost {
   project: string; // absolute working directory (cwd) the session ran in
   cost: number;
@@ -63,9 +75,12 @@ interface CostData {
   daily: DayCost[];
   byModel: ModelCost[];
   dailyModels: Record<string, ModelCost[]>;
+  byProvider: ProviderCost[];
+  dailyProviders: Record<string, ProviderCost[]>;
   byProject: ProjectCost[];
   projectDaily: Record<string, DayCost[]>;
   projectModels: Record<string, ModelCost[]>;
+  projectProviders: Record<string, ProviderCost[]>;
   total: number;
   inputCost: number;
   outputCost: number;
@@ -81,6 +96,12 @@ interface PeriodFilter {
   from: string;
   to?: string;
   label: string;
+}
+
+interface CostQuery {
+  period: PeriodFilter;
+  providerFilter?: string;
+  providerLabel?: string;
 }
 
 function parsePeriod(args: string): PeriodFilter {
@@ -128,14 +149,101 @@ function parsePeriod(args: string): PeriodFilter {
   return { from: "0000-01-01", label: "All time" };
 }
 
+function parsePeriodToken(token: string): PeriodFilter | undefined {
+  const trimmed = token.trim().toLowerCase();
+  if (!trimmed) return undefined;
+  if (trimmed === "all" || trimmed === "today" || trimmed === "week" || trimmed === "month") {
+    return parsePeriod(trimmed);
+  }
+  if (/^\d+$/.test(trimmed)) {
+    return parsePeriod(trimmed);
+  }
+  if (/^\d{4}-\d{2}$/.test(trimmed)) {
+    return parsePeriod(trimmed);
+  }
+  return undefined;
+}
+
+function parseProviderToken(token: string): string | undefined {
+  const lower = token.toLowerCase();
+  const hasEquals = lower.indexOf("=");
+  const hasColon = lower.indexOf(":");
+  const i = hasEquals === -1 ? hasColon : hasEquals;
+
+  if (i === -1) return undefined;
+
+  const key = lower.slice(0, i);
+  if (key !== "provider" && key !== "p") return undefined;
+
+  const raw = token.slice(i + 1).trim();
+  return raw ? normalizeProvider(raw) : undefined;
+}
+
+function parseCostQuery(args: string): CostQuery {
+  const tokens = args.split(/\s+/).map((token) => token.trim()).filter(Boolean);
+
+  let period = parsePeriod("all");
+  let providerFilter: string | undefined;
+  let providerLabel: string | undefined;
+
+  for (const token of tokens) {
+    const provider = parseProviderToken(token);
+    if (provider) {
+      providerFilter = provider;
+      const equals = token.indexOf("=");
+      const colon = token.indexOf(":");
+      const sep = equals === -1 ? colon : equals;
+      providerLabel = token.slice(sep + 1).trim();
+      continue;
+    }
+
+    const periodToken = parsePeriodToken(token);
+    if (periodToken) {
+      period = periodToken;
+      continue;
+    }
+
+    if (!providerFilter) {
+      providerFilter = normalizeProvider(token);
+      providerLabel = token;
+    }
+  }
+
+  return { period, providerFilter, providerLabel };
+}
+
+function normalizeProvider(input: string): string {
+  return (input || "").trim().toLowerCase();
+}
+
+function parseProviderFromModel(model: string): string {
+  const raw = (model || "").trim();
+  if (!raw) return "unknown";
+
+  const colon = raw.indexOf(":");
+  if (colon > 0) {
+    return raw.slice(0, colon).trim().toLowerCase();
+  }
+
+  const slash = raw.indexOf("/");
+  if (slash > 0) {
+    return raw.slice(0, slash).trim().toLowerCase();
+  }
+
+  return "unknown";
+}
+
 function emptyCostData(): CostData {
   return {
     daily: [],
     byModel: [],
     dailyModels: {},
+    byProvider: [],
+    dailyProviders: {},
     byProject: [],
     projectDaily: {},
     projectModels: {},
+    projectProviders: {},
     total: 0,
     inputCost: 0,
     outputCost: 0,
@@ -165,7 +273,7 @@ function collectSessionFiles(dir: string, files: string[]): void {
   }
 }
 
-async function scanSessions(fromDate = "0000-01-01", toDate?: string): Promise<CostData> {
+async function scanSessions(fromDate = "0000-01-01", toDate?: string, providerFilter?: string): Promise<CostData> {
   const sessionsDir = getSessionsDir();
   type MutableCost = Omit<DayCost, "date">;
   const newMutableCost = (): MutableCost => ({
@@ -181,9 +289,12 @@ async function scanSessions(fromDate = "0000-01-01", toDate?: string): Promise<C
   const daily: Record<string, MutableCost> = {};
   const byModel: Record<string, MutableCost> = {};
   const dailyModels: Record<string, Record<string, MutableCost>> = {};
+  const byProvider: Record<string, MutableCost> = {};
+  const dailyProviders: Record<string, Record<string, MutableCost>> = {};
   const byProject: Record<string, MutableCost> = {};
   const projectDays: Record<string, Record<string, MutableCost>> = {};
   const projectModels: Record<string, Record<string, MutableCost>> = {};
+  const projectProviders: Record<string, Record<string, MutableCost>> = {};
   const projectSessions: Record<string, Set<string>> = {};
   let total = 0;
   let inputCost = 0;
@@ -194,6 +305,7 @@ async function scanSessions(fromDate = "0000-01-01", toDate?: string): Promise<C
   let outputTokens = 0;
   let messageCount = 0;
   const billedSessions = new Set<string>();
+  const providerFilterKey = providerFilter ? normalizeProvider(providerFilter) : undefined;
   const seenHashes = new Set<string>();
 
   if (!fs.existsSync(sessionsDir)) {
@@ -249,6 +361,9 @@ async function scanSessions(fromDate = "0000-01-01", toDate?: string): Promise<C
         if (!cost || cost <= 0) continue;
 
         const model = msg.model || "unknown";
+        const provider = parseProviderFromModel(msg.provider || model);
+        if (providerFilterKey && provider !== providerFilterKey) continue;
+
         let day = "unknown";
         const ts = msg.timestamp || entry.timestamp;
         if (typeof ts === "number") {
@@ -267,6 +382,7 @@ async function scanSessions(fromDate = "0000-01-01", toDate?: string): Promise<C
         daily[day].inputTokens += usageInputTokens;
         daily[day].outputTokens += usageOutputTokens;
         daily[day].messageCount += 1;
+
         byModel[model] ||= newMutableCost();
         byModel[model].cost += cost;
         byModel[model].inputCost += usageInputCost;
@@ -276,6 +392,7 @@ async function scanSessions(fromDate = "0000-01-01", toDate?: string): Promise<C
         byModel[model].inputTokens += usageInputTokens;
         byModel[model].outputTokens += usageOutputTokens;
         byModel[model].messageCount += 1;
+
         dailyModels[day] ||= {};
         dailyModels[day][model] ||= newMutableCost();
         dailyModels[day][model].cost += cost;
@@ -286,6 +403,28 @@ async function scanSessions(fromDate = "0000-01-01", toDate?: string): Promise<C
         dailyModels[day][model].inputTokens += usageInputTokens;
         dailyModels[day][model].outputTokens += usageOutputTokens;
         dailyModels[day][model].messageCount += 1;
+
+        byProvider[provider] ||= newMutableCost();
+        byProvider[provider].cost += cost;
+        byProvider[provider].inputCost += usageInputCost;
+        byProvider[provider].outputCost += usageOutputCost;
+        byProvider[provider].cacheReadCost += usageCacheReadCost;
+        byProvider[provider].cacheWriteCost += usageCacheWriteCost;
+        byProvider[provider].inputTokens += usageInputTokens;
+        byProvider[provider].outputTokens += usageOutputTokens;
+        byProvider[provider].messageCount += 1;
+
+        dailyProviders[day] ||= {};
+        dailyProviders[day][provider] ||= newMutableCost();
+        dailyProviders[day][provider].cost += cost;
+        dailyProviders[day][provider].inputCost += usageInputCost;
+        dailyProviders[day][provider].outputCost += usageOutputCost;
+        dailyProviders[day][provider].cacheReadCost += usageCacheReadCost;
+        dailyProviders[day][provider].cacheWriteCost += usageCacheWriteCost;
+        dailyProviders[day][provider].inputTokens += usageInputTokens;
+        dailyProviders[day][provider].outputTokens += usageOutputTokens;
+        dailyProviders[day][provider].messageCount += 1;
+
         byProject[sessionCwd] ||= newMutableCost();
         byProject[sessionCwd].cost += cost;
         byProject[sessionCwd].inputCost += usageInputCost;
@@ -295,6 +434,7 @@ async function scanSessions(fromDate = "0000-01-01", toDate?: string): Promise<C
         byProject[sessionCwd].inputTokens += usageInputTokens;
         byProject[sessionCwd].outputTokens += usageOutputTokens;
         byProject[sessionCwd].messageCount += 1;
+
         projectDays[sessionCwd] ||= {};
         projectDays[sessionCwd][day] ||= newMutableCost();
         projectDays[sessionCwd][day].cost += cost;
@@ -305,6 +445,7 @@ async function scanSessions(fromDate = "0000-01-01", toDate?: string): Promise<C
         projectDays[sessionCwd][day].inputTokens += usageInputTokens;
         projectDays[sessionCwd][day].outputTokens += usageOutputTokens;
         projectDays[sessionCwd][day].messageCount += 1;
+
         projectModels[sessionCwd] ||= {};
         projectModels[sessionCwd][model] ||= newMutableCost();
         projectModels[sessionCwd][model].cost += cost;
@@ -315,6 +456,18 @@ async function scanSessions(fromDate = "0000-01-01", toDate?: string): Promise<C
         projectModels[sessionCwd][model].inputTokens += usageInputTokens;
         projectModels[sessionCwd][model].outputTokens += usageOutputTokens;
         projectModels[sessionCwd][model].messageCount += 1;
+
+        projectProviders[sessionCwd] ||= {};
+        projectProviders[sessionCwd][provider] ||= newMutableCost();
+        projectProviders[sessionCwd][provider].cost += cost;
+        projectProviders[sessionCwd][provider].inputCost += usageInputCost;
+        projectProviders[sessionCwd][provider].outputCost += usageOutputCost;
+        projectProviders[sessionCwd][provider].cacheReadCost += usageCacheReadCost;
+        projectProviders[sessionCwd][provider].cacheWriteCost += usageCacheWriteCost;
+        projectProviders[sessionCwd][provider].inputTokens += usageInputTokens;
+        projectProviders[sessionCwd][provider].outputTokens += usageOutputTokens;
+        projectProviders[sessionCwd][provider].messageCount += 1;
+
         (projectSessions[sessionCwd] ||= new Set()).add(sessionId);
         total += cost;
         inputCost += usageInputCost;
@@ -346,6 +499,17 @@ async function scanSessions(fromDate = "0000-01-01", toDate?: string): Promise<C
       .sort((a, b) => b.cost - a.cost);
   }
 
+  const providerArr = Object.entries(byProvider)
+    .map(([provider, cost]) => ({ provider, ...cost }))
+    .sort((a, b) => b.cost - a.cost);
+
+  const dailyProviderArr: Record<string, ProviderCost[]> = {};
+  for (const [day, providers] of Object.entries(dailyProviders)) {
+    dailyProviderArr[day] = Object.entries(providers)
+      .map(([provider, value]) => ({ provider, ...value }))
+      .sort((a, b) => b.cost - a.cost);
+  }
+
   const projectArr: ProjectCost[] = Object.entries(byProject)
     .map(([project, cost]) => ({ project, ...cost, sessionCount: projectSessions[project]?.size || 0 }))
     .sort((a, b) => b.cost - a.cost);
@@ -364,13 +528,23 @@ async function scanSessions(fromDate = "0000-01-01", toDate?: string): Promise<C
       .sort((a, b) => b.cost - a.cost);
   }
 
+  const projectProviderArr: Record<string, ProviderCost[]> = {};
+  for (const [project, providers] of Object.entries(projectProviders)) {
+    projectProviderArr[project] = Object.entries(providers)
+      .map(([provider, value]) => ({ provider, ...value }))
+      .sort((a, b) => b.cost - a.cost);
+  }
+
   return {
     daily: dailyArr,
     byModel: modelArr,
     dailyModels: dailyModelArr,
+    byProvider: providerArr,
+    dailyProviders: dailyProviderArr,
     byProject: projectArr,
     projectDaily: projectDailyArr,
     projectModels: projectModelArr,
+    projectProviders: projectProviderArr,
     total,
     inputCost,
     outputCost,
@@ -632,6 +806,28 @@ function modelTable(models: ModelCost[], total: number, selectedIndex = -1, colo
   return lines;
 }
 
+function providerTable(providers: ProviderCost[], total: number, selectedIndex = -1, colors = plainChartColors): string[] {
+  const lines: string[] = [];
+  lines.push("  Cost by Provider");
+  lines.push("");
+
+  const maxBar = 20;
+  const maxCost = providers.length > 0 ? providers[0].cost : 1;
+
+  const { items, offset } = sliceAround(providers, Math.max(0, selectedIndex), 10);
+  for (let i = 0; i < items.length; i++) {
+    const p = items[i];
+    const pct = total > 0 ? (p.cost / total) * 100 : 0;
+    const barLen = Math.max(1, Math.round((p.cost / maxCost) * maxBar));
+    const bar = colors.heat("█".repeat(barLen), p.cost / maxCost);
+    const marker = offset + i === selectedIndex ? ">" : " ";
+    const name = p.provider.padEnd(20).slice(0, 20);
+    lines.push(` ${marker} ${name} ${bar} ${formatUsd(p.cost)} (${pct.toFixed(0)}%)`);
+  }
+
+  return lines;
+}
+
 // --- Per-project (directory) tree -------------------------------------------
 
 type RawTreeNode = {
@@ -858,15 +1054,16 @@ type ThemeLike = {
 };
 
 class CostsComponent implements Component {
-  private sections = ["Overview", "Daily", "Weekly", "Models", "Projects"];
+  private sections = ["Overview", "Daily", "Weekly", "Models", "Providers", "Projects"];
   private sectionIndex = 0;
   private dailyIndex: number;
   private weekIndex: number;
   private modelIndex = 0;
+  private providerIndex = 0;
   private projectIndex = 0;
   // Which breakdown accordion is open per tab (toggled with Space).
-  // Daily/Weekly: 0 = by model, 1 = by project. Models: 0 = by day, 1 = by project.
-  private breakdownOpen: Record<string, number> = { Daily: 0, Weekly: 0, Models: 0 };
+  // Daily/Weekly: 0 = by model, 1 = by project. Models: 0 = by day, 1 = by project. Providers: 0 = by day, 1 = by project.
+  private breakdownOpen: Record<string, number> = { Daily: 0, Weekly: 0, Models: 0, Providers: 0 };
   private readonly weekly: DayCost[];
   private readonly weeklyModels: Record<string, ModelCost[]>;
   private readonly projectTree: ProjectTreeNode | null;
@@ -929,6 +1126,7 @@ class CostsComponent implements Component {
 
     if (matchesKey(data, Key.home)) {
       if (this.section() === "Models") this.modelIndex = 0;
+      else if (this.section() === "Providers") this.providerIndex = 0;
       else if (this.section() === "Projects") this.projectIndex = 0;
       else if (this.section() === "Weekly") this.weekIndex = 0;
       else this.dailyIndex = 0;
@@ -937,6 +1135,7 @@ class CostsComponent implements Component {
     }
     if (matchesKey(data, Key.end)) {
       if (this.section() === "Models") this.modelIndex = Math.max(0, this.data.byModel.length - 1);
+      else if (this.section() === "Providers") this.providerIndex = Math.max(0, this.data.byProvider.length - 1);
       else if (this.section() === "Projects") this.projectIndex = Math.max(0, this.visibleProjectRows().length - 1);
       else if (this.section() === "Weekly") this.weekIndex = Math.max(0, this.weekly.length - 1);
       else this.dailyIndex = Math.max(0, this.data.daily.length - 1);
@@ -955,11 +1154,11 @@ class CostsComponent implements Component {
       return;
     }
 
-    // Daily/Weekly/Models: "b" toggles the breakdown accordion (by model ↔ by project, etc.).
+    // Daily/Weekly/Models/Providers: "b" toggles the breakdown accordion (by model/provider ↔ by project, etc.).
     // Space/Enter also work, but "b" is the advertised key since the pi-voice extension
     // intercepts Space when loaded.
     if (
-      (this.section() === "Daily" || this.section() === "Weekly" || this.section() === "Models") &&
+      (this.section() === "Daily" || this.section() === "Weekly" || this.section() === "Models" || this.section() === "Providers") &&
       (data.toLowerCase() === "b" || matchesKey(data, Key.enter) || matchesKey(data, Key.return) || matchesKey(data, Key.space))
     ) {
       const s = this.section();
@@ -970,6 +1169,7 @@ class CostsComponent implements Component {
 
     if (matchesKey(data, Key.up)) {
       if (this.section() === "Models") this.modelIndex = moveIndex(this.modelIndex, -1, this.data.byModel.length);
+      else if (this.section() === "Providers") this.providerIndex = moveIndex(this.providerIndex, -1, this.data.byProvider.length);
       else if (this.section() === "Projects") this.projectIndex = moveIndex(this.projectIndex, -1, this.visibleProjectRows().length);
       else if (this.section() === "Weekly") this.weekIndex = moveIndex(this.weekIndex, -1, this.weekly.length);
       else this.dailyIndex = moveIndex(this.dailyIndex, -1, this.data.daily.length);
@@ -978,6 +1178,7 @@ class CostsComponent implements Component {
     }
     if (matchesKey(data, Key.down)) {
       if (this.section() === "Models") this.modelIndex = moveIndex(this.modelIndex, 1, this.data.byModel.length);
+      else if (this.section() === "Providers") this.providerIndex = moveIndex(this.providerIndex, 1, this.data.byProvider.length);
       else if (this.section() === "Projects") this.projectIndex = moveIndex(this.projectIndex, 1, this.visibleProjectRows().length);
       else if (this.section() === "Weekly") this.weekIndex = moveIndex(this.weekIndex, 1, this.weekly.length);
       else this.dailyIndex = moveIndex(this.dailyIndex, 1, this.data.daily.length);
@@ -1018,6 +1219,8 @@ class CostsComponent implements Component {
       lines.push(...this.renderWeekly(contentWidth).map(boxLine));
     } else if (this.section() === "Models") {
       lines.push(...this.renderModels(contentWidth).map(boxLine));
+    } else if (this.section() === "Providers") {
+      lines.push(...this.renderProviders(contentWidth).map(boxLine));
     } else {
       lines.push(...this.renderProjects(contentWidth).map(boxLine));
     }
@@ -1025,11 +1228,12 @@ class CostsComponent implements Component {
     lines.push(rule("├", "┤"));
     let where = "select date";
     if (this.section() === "Models") where = "select model";
+    else if (this.section() === "Providers") where = "select provider";
     else if (this.section() === "Projects") where = "select dir";
     else if (this.section() === "Weekly") where = "select week";
     let expandHint = "";
     if (this.section() === "Projects") expandHint = ` · ${this.theme.fg("dim", "↵/Space")} expand`;
-    else if (this.section() === "Daily" || this.section() === "Weekly" || this.section() === "Models")
+    else if (this.section() === "Daily" || this.section() === "Weekly" || this.section() === "Models" || this.section() === "Providers")
       expandHint = ` · ${this.theme.fg("dim", "b")} breakdown`;
     lines.push(boxLine(`${this.theme.fg("dim", "←/→")} section · ${this.theme.fg("dim", "↑/↓")} ${where}${expandHint} · ${this.theme.fg("dim", "Home/End")} jump · ${this.theme.fg("dim", "q/Esc")} close`));
     lines.push(rule("╰", "╯"));
@@ -1159,7 +1363,33 @@ class CostsComponent implements Component {
     return lines;
   }
 
-  // --- Cross breakdowns (model ↔ project) for the Daily/Weekly/Models tabs ---
+  private renderProviders(width: number): string[] {
+    const selected = this.data.byProvider[this.providerIndex];
+    const lines: string[] = ["", ...providerTable(this.data.byProvider, this.data.total, this.providerIndex, this.chartColors()), ""];
+    if (!selected) return [...lines, "No provider data."];
+
+    const series = this.data.daily
+      .map((day) => ({
+        date: day.date,
+        cost: (this.data.dailyProviders[day.date] || []).find((m) => m.provider === selected.provider)?.cost || 0,
+        messageCount: (this.data.dailyProviders[day.date] || []).find((m) => m.provider === selected.provider)?.messageCount || 0,
+      }))
+      .filter((day) => day.cost > 0);
+
+    lines.push(`${selected.provider} · ${formatUsd(selected.cost)} · ${selected.messageCount} billed messages`);
+    lines.push(costSplitLine(selected));
+    lines.push("");
+    const projects = this.projectsForProvider(selected.provider);
+    lines.push(
+      ...this.renderAccordion("Providers", [
+        { label: "By day", render: () => lineChart(series, width, series[series.length - 1]?.date, this.chartColors()) },
+        { label: "By project", count: projects.length, render: () => this.projectBreakdownRows(projects, selected.cost) },
+      ]),
+    );
+    return lines;
+  }
+
+  // --- Cross breakdown helpers for model/provider ↔ project views ---
 
   // Render a set of collapsible sections; only the open one shows its body.
   private renderAccordion(tab: string, sections: { label: string; count?: number; render: () => string[] }[]): string[] {
@@ -1230,6 +1460,15 @@ class CostsComponent implements Component {
     const out: { project: string; cost: number }[] = [];
     for (const p of this.data.byProject) {
       const m = (this.data.projectModels[p.project] || []).find((x) => x.model === model);
+      if (m && m.cost > 0) out.push({ project: p.project, cost: m.cost });
+    }
+    return out.sort((a, b) => b.cost - a.cost);
+  }
+
+  private projectsForProvider(provider: string): { project: string; cost: number }[] {
+    const out: { project: string; cost: number }[] = [];
+    for (const p of this.data.byProject) {
+      const m = (this.data.projectProviders[p.project] || []).find((x) => x.provider === provider);
       if (m && m.cost > 0) out.push({ project: p.project, cost: m.cost });
     }
     return out.sort((a, b) => b.cost - a.cost);
@@ -1367,22 +1606,26 @@ export default function (pi: ExtensionAPI) {
   pi.registerCommand("costs", {
     description: "Show all-time Pi session costs with charts",
     handler: async (args, ctx) => {
-      const { from, to, label } = parsePeriod(args || "");
+      const query = parseCostQuery(args || "");
+      const { from, to } = query.period;
+      const periodLabel = query.providerLabel
+        ? `${query.period.label} · provider: ${query.providerLabel}`
+        : query.period.label;
 
       if (ctx.hasUI) {
-        ctx.ui.notify(`Scanning costs (${label})...`, "info");
+        ctx.ui.notify(`Scanning costs (${periodLabel})...`, "info");
       }
 
-      const data = await scanSessions(from, to);
+      const data = await scanSessions(from, to, query.providerFilter);
 
       if (data.messageCount === 0) {
         if (ctx.hasUI) {
-          ctx.ui.notify(`No cost data found for: ${label}`, "warning");
+          ctx.ui.notify(`No cost data found for: ${periodLabel}`, "warning");
         }
         return;
       }
 
-      await showCostsUI(data, ctx, label);
+      await showCostsUI(data, ctx, periodLabel);
     },
   });
 }
