@@ -1136,12 +1136,21 @@ class CostsComponent implements Component {
     const lines: string[] = ["", ...modelTable(this.data.byModel, this.data.total, this.modelIndex, this.chartColors()), ""];
     if (!selected) return [...lines, "No model data."];
 
-    const series = this.data.daily
-      .map((day) => ({
-        date: day.date,
-        cost: (this.data.dailyModels[day.date] || []).find((m) => m.model === selected.model)?.cost || 0,
-        messageCount: (this.data.dailyModels[day.date] || []).find((m) => m.model === selected.model)?.messageCount || 0,
-      }))
+    const series: DayCost[] = this.data.daily
+      .map((day) => {
+        const match = (this.data.dailyModels[day.date] || []).find((m) => m.model === selected.model);
+        return {
+          date: day.date,
+          cost: match?.cost || 0,
+          inputCost: 0,
+          outputCost: 0,
+          cacheReadCost: 0,
+          cacheWriteCost: 0,
+          inputTokens: 0,
+          outputTokens: 0,
+          messageCount: match?.messageCount || 0,
+        };
+      })
       .filter((day) => day.cost > 0);
 
     lines.push(`${selected.model} · ${formatUsd(selected.cost)} · ${selected.messageCount} billed messages`);
