@@ -733,7 +733,7 @@ function verticalBarChart(data: DayCost[], width: number, selectedDate?: string,
   return lines;
 }
 
-function lineChart(data: DayCost[], width: number, selectedDate?: string, colors = plainChartColors): string[] {
+function lineChart(data: Pick<DayCost, "date" | "cost">[], width: number, selectedDate?: string, colors = plainChartColors): string[] {
   if (data.length === 0) return ["  No cost data found."];
 
   const labelWidth = 9;
